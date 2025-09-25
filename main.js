@@ -1,6 +1,4 @@
-// Import the serve function from the Deno standard library
-import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
-
+// JavaScript conversion of the Deno HTTP server script
 const DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36";
 const ALLOWED_DOMAINS = []; // Populate if you want to restrict scraping
 
@@ -53,26 +51,62 @@ async function fetchPage(url) {
   }
 }
 
-serve(async (req) => {
+// Using Express or Node.js HTTP server instead of Deno's serve
+const http = require('http');
+
+const server = http.createServer(async (req, res) => {
   if (req.method !== "POST") {
-    return new Response("Use POST with JSON { url: string }", {
-      status: 405
-    });
+    res.writeHead(405);
+    res.end("Use POST with JSON { url: string }");
+    return;
   }
+
   let url = "";
-  try {
-    const { url: u } = await req.json();
-    url = u;
-  } catch {
-    return new Response("Bad JSON", {
-      status: 400
-    });
-  }
-  if (!validateUrl(url)) {
-    return new Response("Invalid URL", {
-      status: 400
-    });
-  }
-  // Optionally: rate limit by IP, log, etc.
-  return await fetchPage(url);
+  let body = [];
+  
+  req.on('data', (chunk) => {
+    body.push(chunk);
+  });
+
+  req.on('end', async () => {
+    try {
+      body = Buffer.concat(body).toString();
+      const { url: u } = JSON.parse(body);
+      url = u;
+      
+      if (!validateUrl(url)) {
+        res.writeHead(400);
+        res.end("Invalid URL");
+        return;
+      }
+
+      // Optionally: rate limit by IP, log, etc.
+      const response = await fetchPage(url);
+      
+      res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
+      
+      // Stream the response body
+      const reader = response.body.getReader();
+      const pipe = async () => {
+        const { done, value } = await reader.read();
+        if (done) {
+          res.end();
+          return;
+        }
+        res.write(value);
+        await pipe();
+      };
+      
+      await pipe();
+      
+    } catch (e) {
+      res.writeHead(400);
+      res.end("Bad JSON");
+    }
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
