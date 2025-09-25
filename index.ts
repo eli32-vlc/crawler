@@ -1,73 +1,97 @@
-import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
-const DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36";
-const ALLOWED_DOMAINS = []; // Populate if you want to restrict scraping
-function validateUrl(url) {
+const DEFAULT_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36";
+
+const ALLOWED_DOMAINS: string[] = []; // Populate to restrict scraping
+
+function validateUrl(url: string): boolean {
   try {
     const u = new URL(url);
-    if (![
-      "http:",
-      "https:"
-    ].includes(u.protocol)) return false;
+    if (!["http:", "https:"].includes(u.protocol)) return false;
     // Optionally restrict domains:
     // if (ALLOWED_DOMAINS.length && !ALLOWED_DOMAINS.includes(u.hostname)) return false;
     return true;
-  } catch  {
+  } catch {
     return false;
   }
 }
-async function fetchPage(url) {
-  const controller = new AbortController();
-  const timeout = setTimeout(()=>controller.abort(), 15000); // 15s timeout
+
+const corsHeaders: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Vary": "Origin",
+};
+
+export default async function (context: any) {
+  const { req, res, log, error } = context;
+
+  if (req.method === "OPTIONS") {
+    res.send("", 204, corsHeaders);
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.send("Use POST with JSON { url: string }", 405, {
+      ...corsHeaders,
+      "Content-Type": "text/plain; charset=utf-8",
+    });
+    return;
+  }
+
+  let url = "";
   try {
-    const resp = await fetch(url, {
+    const body = await req.json();
+    url = String(body?.url ?? "");
+  } catch {
+    res.send("Bad JSON", 400, {
+      ...corsHeaders,
+      "Content-Type": "text/plain; charset=utf-8",
+    });
+    return;
+  }
+
+  if (!validateUrl(url)) {
+    res.send("Invalid URL", 400, {
+      ...corsHeaders,
+      "Content-Type": "text/plain; charset=utf-8",
+    });
+    return;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000); // 15s timeout
+
+  try {
+    const upstream = await fetch(url, {
       signal: controller.signal,
       headers: {
         "User-Agent": DEFAULT_UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept":
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "close"
+        // Accept-Encoding is automatically negotiated; you can omit it.
+        "Connection": "close",
       },
       redirect: "follow",
-      method: "GET"
+      method: "GET",
     });
-    // Only forward the minimal necessary headers
-    const headers = new Headers();
-    headers.set("content-type", resp.headers.get("content-type") ?? "text/html");
-    headers.set("x-proxy-source", "supabase-edge");
-    // Stream the response if possible (to save memory)
-    return new Response(resp.body, {
-      status: resp.status,
-      headers
+
+    const contentType = upstream.headers.get("content-type") ?? "text/html";
+    // Appwrite res.send expects a string or Uint8Array; we can't stream, so buffer.
+    const body = new Uint8Array(await upstream.arrayBuffer());
+
+    res.send(body, upstream.status, {
+      ...corsHeaders,
+      "Content-Type": contentType,
+      "x-proxy-source": "appwrite-function",
     });
   } catch (e) {
-    return new Response("Failed to fetch page", {
-      status: 502
+    error?.(e);
+    res.send("Failed to fetch page", 502, {
+      ...corsHeaders,
+      "Content-Type": "text/plain; charset=utf-8",
     });
-  } finally{
+  } finally {
     clearTimeout(timeout);
   }
 }
-serve(async (req)=>{
-  if (req.method !== "POST") {
-    return new Response("Use POST with JSON { url: string }", {
-      status: 405
-    });
-  }
-  let url = "";
-  try {
-    const { url: u } = await req.json();
-    url = u;
-  } catch  {
-    return new Response("Bad JSON", {
-      status: 400
-    });
-  }
-  if (!validateUrl(url)) {
-    return new Response("Invalid URL", {
-      status: 400
-    });
-  }
-  // Optionally: rate limit by IP, log, etc.
-  return await fetchPage(url);
-});
