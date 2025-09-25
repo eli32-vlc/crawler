@@ -1,0 +1,13 @@
+{
+  "name": "web-proxy",
+  "version": "1.0.0",
+  "description": "A simple web proxy service",
+  "main": "index.js",
+  "scripts": {
+    "start": "node main.js"
+  },
+  "dependencies": {},
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
